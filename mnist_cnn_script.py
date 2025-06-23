@@ -19,27 +19,26 @@ import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
 
-from keras.preprocessing.image import ImageDataGenerator
-from keras.utils import to_categorical
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.utils import to_categorical
 
-from keras.models import Sequential, load_model
-from keras.layers import Dense, Dropout, Flatten
-from keras.layers import Conv2D, MaxPooling2D, BatchNormalization
-from keras.optimizers import Adam
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, Dropout, Flatten
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization
+from tensorflow.keras.optimizers import Adam
 
-from keras.callbacks import LearningRateScheduler
-from keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import LearningRateScheduler
+from tensorflow.keras.callbacks import EarlyStopping
 
 def load_data():
     """
-    Load MNIST training and test data
-    Note: Update the file paths according to your data location
+    Load MNIST training and test data from CSV files
     """
-    print("Loading data...")
+    print("Loading data from CSV files...")
     
-    # Update these paths to match your data location
-    train = pd.read_csv('../input/digit-recognizer/train.csv')
-    test = pd.read_csv('../input/digit-recognizer/test.csv')
+    # Load data from the data directory
+    train = pd.read_csv('data/mnist_train.csv')
+    test = pd.read_csv('data/mnist_test.csv')
     df = train.copy()
     df_test = test.copy()
     
@@ -85,11 +84,21 @@ def preprocess_data(df, df_test, seed=3141):
     print(f"Training set: {x_train.shape}")
     print(f"Validation set: {x_test.shape}")
     
+    # For test data, separate features and labels
+    if 'label' in df_test.columns:
+        df_test_features = df_test.iloc[:, 1:]  # Features (exclude label column)
+        df_test_labels = df_test.iloc[:, 0]     # Labels (first column)
+        print(f"Test data features shape: {df_test_features.shape}")
+        print(f"Test data labels shape: {df_test_labels.shape}")
+    else:
+        df_test_features = df_test  # No label column to exclude
+        df_test_labels = None
+    
     # Reshape images from 1D to 3D (28x28x1)
     # -1 means let numpy figure out the number of examples
     x_train = x_train.values.reshape(-1, 28, 28, 1)
     x_test = x_test.values.reshape(-1, 28, 28, 1)
-    df_test = df_test.values.reshape(-1, 28, 28, 1)
+    df_test = df_test_features.values.reshape(-1, 28, 28, 1)
     
     print(f"Reshaped training data: {x_train.shape}")
     print(f"Reshaped validation data: {x_test.shape}")
@@ -125,7 +134,7 @@ def preprocess_data(df, df_test, seed=3141):
     print(f"One-hot encoded training labels: {y_train.shape}")
     print(f"One-hot encoded validation labels: {y_test.shape}")
     
-    return x_train, x_test, y_train, y_test, df_test, datagen
+    return x_train, x_test, y_train, y_test, df_test, datagen, df_test_labels
 
 def build_model():
     """
@@ -175,7 +184,7 @@ def compile_model(model):
     print("\nCompiling model...")
     
     # Optimizer
-    optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999)
+    optimizer = Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999)
     
     # Compile the model
     model.compile(optimizer=optimizer, 
@@ -221,7 +230,7 @@ def train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks):
     epochs = 50
     
     # Fit the model
-    history = model.fit_generator(
+    history = model.fit(
         datagen.flow(x_train, y_train, batch_size=batch_size),
         epochs=epochs,
         validation_data=(x_test, y_test),
@@ -271,14 +280,20 @@ def evaluate_model(model, x_test, y_test, history):
     
     return test_accuracy
 
-def make_predictions(model, df_test):
+def make_predictions(model, df_test, df_test_labels=None):
     """
     Make predictions on test data and save to CSV
+    Also calculate accuracy if test labels are provided
     """
     print("\nMaking predictions...")
     
     # Make predictions
     pred_digits_test = np.argmax(model.predict(df_test), axis=1)
+    
+    # Calculate accuracy if test labels are provided
+    if df_test_labels is not None:
+        test_accuracy = np.mean(pred_digits_test == df_test_labels)
+        print(f"Test set accuracy: {test_accuracy:.4f}")
     
     # Create submission file
     image_id_test = list(range(1, len(pred_digits_test) + 1))
@@ -321,7 +336,7 @@ def main():
             return
         
         # Preprocess data
-        x_train, x_test, y_train, y_test, df_test, datagen = preprocess_data(df, df_test)
+        x_train, x_test, y_train, y_test, df_test, datagen, df_test_labels = preprocess_data(df, df_test)
         
         # Build model
         model = build_model()
@@ -339,7 +354,7 @@ def main():
         test_accuracy = evaluate_model(model, x_test, y_test, history)
         
         # Make predictions
-        submission = make_predictions(model, df_test)
+        submission = make_predictions(model, df_test, df_test_labels)
         
         # Save model
         save_model(model)
