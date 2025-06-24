@@ -5,7 +5,7 @@ Achieves 95% accuracy with minimal training samples through incremental learning
 
 This script implements:
 - Incremental learning: add 100 cases at a time until 95% accuracy
-- Multiple trials with different random subsets (parallel execution)
+- Multiple trials with different random subsets
 - Best subset selection and saving
 - Convolutional Neural Network (CNN) architecture
 - Data augmentation and preprocessing
@@ -18,12 +18,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import random
 from datetime import datetime
-import multiprocessing as mp
-from functools import partial
-import os
-
-# Set matplotlib to non-interactive backend to avoid display issues
-plt.ioff()
 
 from sklearn.model_selection import train_test_split
 
@@ -268,9 +262,9 @@ def train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks, epo
     
     return history
 
-def evaluate_model(model, x_test, y_test, history, show_plots=False):
+def evaluate_model(model, x_test, y_test, history):
     """
-    Evaluate the model and optionally plot training history
+    Evaluate the model and plot training history
     """
     print("\nEvaluating model...")
     
@@ -279,32 +273,31 @@ def evaluate_model(model, x_test, y_test, history, show_plots=False):
     print(f"Test accuracy: {test_accuracy:.4f}")
     print(f"Test loss: {test_loss:.4f}")
     
-    # Plot training history only if requested
-    if show_plots:
-        plt.figure(figsize=(13, 5))
-        
-        # Plot loss
-        plt.subplot(1, 2, 1)
-        plt.plot(history.history['loss'])
-        plt.plot(history.history['val_loss'])
-        plt.title("Model Loss")
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.legend(['Train', 'Validation'])
-        plt.grid()
-        
-        # Plot accuracy
-        plt.subplot(1, 2, 2)
-        plt.plot(history.history['accuracy'])
-        plt.plot(history.history['val_accuracy'])
-        plt.title('Model Accuracy')
-        plt.xlabel('Epochs')
-        plt.ylabel('Accuracy')
-        plt.legend(['Train', 'Validation'])
-        plt.grid()
-        
-        plt.tight_layout()
-        plt.show()
+    # Plot training history
+    plt.figure(figsize=(13, 5))
+    
+    # Plot loss
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title("Model Loss")
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend(['Train', 'Validation'])
+    plt.grid()
+    
+    # Plot accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['accuracy'])
+    plt.plot(history.history['val_accuracy'])
+    plt.title('Model Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend(['Train', 'Validation'])
+    plt.grid()
+    
+    plt.tight_layout()
+    plt.show()
     
     return test_accuracy
 
@@ -346,13 +339,11 @@ def save_model(model, filename='mnist_cnn_model.h5'):
     model.save(filename)
     print("Model saved successfully!")
 
-def incremental_learning_trial(args):
+def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, batch_size=100, max_samples=None):
     """
-    Perform one incremental learning trial (for multiprocessing)
+    Perform one incremental learning trial
     Start with 100 samples, add 100 more until target accuracy is reached
     """
-    df, df_test, trial_num, target_accuracy, batch_size, max_samples = args
-    
     print(f"\n{'='*60}")
     print(f"TRIAL {trial_num}")
     print(f"{'='*60}")
@@ -400,8 +391,8 @@ def incremental_learning_trial(args):
             # Train model (fewer epochs for incremental learning)
             history = train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks, epochs=30)
             
-            # Evaluate model (no plots during trial)
-            test_accuracy = evaluate_model(model, x_test, y_test, history, show_plots=False)
+            # Evaluate model
+            test_accuracy = evaluate_model(model, x_test, y_test, history)
             
             print(f"Current accuracy: {test_accuracy:.4f}")
             
@@ -437,23 +428,24 @@ def incremental_learning_trial(args):
 
 def run_multiple_trials(df, df_test, num_trials=10, target_accuracy=0.95, batch_size=100, max_samples=None):
     """
-    Run multiple incremental learning trials in parallel and find the best performing subset
+    Run multiple incremental learning trials and find the best performing subset
     """
     print(f"\n{'='*80}")
-    print(f"RUNNING {num_trials} INCREMENTAL LEARNING TRIALS (PARALLEL)")
+    print(f"RUNNING {num_trials} INCREMENTAL LEARNING TRIALS")
     print(f"Target accuracy: {target_accuracy}")
     print(f"Batch size: {batch_size}")
-    print(f"Number of processes: {min(num_trials, mp.cpu_count())}")
     print(f"{'='*80}")
     
-    # Prepare arguments for multiprocessing
-    args_list = [(df, df_test, trial, target_accuracy, batch_size, max_samples) 
-                 for trial in range(1, num_trials + 1)]
+    trials_results = []
     
-    # Run trials in parallel
-    num_processes = min(num_trials, mp.cpu_count())
-    with mp.Pool(processes=num_processes) as pool:
-        trials_results = pool.map(incremental_learning_trial, args_list)
+    for trial in range(1, num_trials + 1):
+        result = incremental_learning_trial(df, df_test, trial, target_accuracy, batch_size, max_samples)
+        trials_results.append(result)
+        
+        print(f"\nTrial {trial} completed:")
+        print(f"  Best accuracy: {result['best_accuracy']:.4f}")
+        print(f"  Samples used: {result['samples_used']}")
+        print(f"  Target reached: {result['target_reached']}")
     
     # Find the best trial
     best_trial = max(trials_results, key=lambda x: x['best_accuracy'])
@@ -491,7 +483,7 @@ def main():
     Main function to run the incremental learning pipeline
     """
     print("=" * 80)
-    print("MNIST Digit Recognition - Incremental Learning (Parallel)")
+    print("MNIST Digit Recognition - Incremental Learning")
     print("=" * 80)
     
     try:
@@ -503,10 +495,10 @@ def main():
             print("Warning: Missing values detected in the data!")
             return
         
-        # Run multiple trials in parallel
+        # Run multiple trials
         best_trial, all_trials = run_multiple_trials(
             df, df_test, 
-            num_trials=100,  # Number of trials to run
+            num_trials=5,  # Number of trials to run
             target_accuracy=0.95,  # Target accuracy
             batch_size=100,  # Samples to add each iteration
             max_samples=10000  # Maximum samples to use (None for all)
@@ -526,19 +518,6 @@ def main():
         for trial in all_trials:
             print(f"Trial {trial['trial_num']}: Accuracy={trial['best_accuracy']:.4f}, "
                   f"Samples={trial['samples_used']}, Target_reached={trial['target_reached']}")
-        
-        # Show plots for the best trial at the end
-        if best_trial['best_history'] is not None:
-            print(f"\n{'='*80}")
-            print(f"PLOTTING BEST TRIAL RESULTS")
-            print(f"{'='*80}")
-            # We need to recreate the test data for the best trial to show plots
-            best_indices = best_trial['best_sample_indices']
-            df_best_subset = df.iloc[best_indices].copy()
-            x_train, x_test, y_train, y_test, df_test_processed, datagen, df_test_labels, img_size = preprocess_data(
-                df_best_subset, df_test, seed=42
-            )
-            evaluate_model(best_trial['best_model'], x_test, y_test, best_trial['best_history'], show_plots=True)
         
         print(f"\n{'='*80}")
         print(f"PIPELINE COMPLETED!")
