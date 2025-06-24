@@ -461,20 +461,30 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
     """
     Perform one incremental learning trial
     Start with 100 samples, add 100 more until target accuracy is reached
+    Uses stratified sampling to ensure representative class distribution
     """
     print(f"\n{'='*60}")
     print(f"TRIAL {trial_num}")
     print(f"{'='*60}")
     
-    # Set random seed for this trial
-    trial_seed = random.randint(1, 10000)
+    # Set unique random seed for this trial
+    trial_seed = random.randint(1, 100000)
     np.random.seed(trial_seed)
     random.seed(trial_seed)
+    print(f"Trial {trial_num} using seed: {trial_seed}")
     
     # Get total available samples
     total_samples = len(df)
     if max_samples is None:
         max_samples = total_samples
+    
+    # Get class labels for stratified sampling
+    if 'label' in df.columns:
+        class_labels = df.iloc[:, 0]  # First column (labels)
+    elif 'class' in df.columns:
+        class_labels = df.iloc[:, 0]  # First column (class)
+    else:
+        raise ValueError("Neither 'label' nor 'class' column found in training data")
     
     # Initialize variables
     current_samples = batch_size
@@ -483,15 +493,36 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
     best_history = None
     best_sample_indices = None
     
-    # Get random subset of indices
-    all_indices = np.random.permutation(total_samples)[:max_samples]
+    # Use stratified sampling to get representative indices
+    from sklearn.model_selection import StratifiedShuffleSplit
     
     while current_samples <= max_samples and best_accuracy < target_accuracy:
         print(f"\n--- Training with {current_samples} samples ---")
         
-        # Select current subset
-        current_indices = all_indices[:current_samples]
+        # Use stratified sampling to select current subset
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=1-current_samples/total_samples, random_state=trial_seed)
+        
+        # Get stratified indices
+        for train_idx, _ in sss.split(df, class_labels):
+            current_indices = train_idx
+            break
+        
+        # Ensure we get exactly the number of samples we want
+        if len(current_indices) > current_samples:
+            current_indices = current_indices[:current_samples]
+        elif len(current_indices) < current_samples:
+            # If we don't have enough, add more random samples
+            remaining_indices = np.setdiff1d(np.arange(total_samples), current_indices)
+            additional_needed = current_samples - len(current_indices)
+            additional_indices = np.random.choice(remaining_indices, additional_needed, replace=False)
+            current_indices = np.concatenate([current_indices, additional_indices])
+        
         df_subset = df.iloc[current_indices].copy()
+        
+        # Print class distribution for verification
+        subset_classes = df_subset.iloc[:, 0]
+        unique_classes, class_counts = np.unique(subset_classes, return_counts=True)
+        print(f"Class distribution: {dict(zip(unique_classes, class_counts))}")
         
         # Preprocess this subset
         try:
@@ -509,7 +540,7 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
             # Train model (fewer epochs for incremental learning)
             history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), datagen, callbacks, epochs=30)
             
-            # Evaluate model
+            # Evaluate model on the complete test set
             test_accuracy = evaluate_model(model, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), history, plot=False)
             
             print(f"Current accuracy: {test_accuracy:.4f}")
@@ -541,7 +572,8 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
         'best_model': best_model,
         'best_history': best_history,
         'best_sample_indices': best_sample_indices,
-        'target_reached': best_accuracy >= target_accuracy
+        'target_reached': best_accuracy >= target_accuracy,
+        'seed_used': trial_seed
     }
 
 def run_multiple_trials(df, df_test, num_trials=10, target_accuracy=0.95, batch_size=100, max_samples=None):
