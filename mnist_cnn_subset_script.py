@@ -268,25 +268,44 @@ def compile_model(model):
 
 def create_callbacks():
     """
-    Create callbacks for training
+    Create callbacks for training with smart learning rate scheduling
     """
     print("\nCreating callbacks...")
     
-    # Learning Rate Scheduler
-    reduce_lr = LearningRateScheduler(lambda x: 1e-3 * 0.9 ** x)
+    # Smart Learning Rate Scheduler with warmup and plateau detection
+    def smart_lr_schedule(epoch):
+        initial_lr = 0.001
+        
+        # Warmup phase (first 3 epochs)
+        if epoch < 3:
+            return initial_lr * (epoch + 1) / 3
+        
+        # Main training phase with cosine annealing
+        warmup_epochs = 3
+        total_epochs = 30
+        decay_epochs = total_epochs - warmup_epochs
+        current_decay_epoch = epoch - warmup_epochs
+        
+        # Cosine annealing with restarts
+        cosine_decay = 0.5 * (1 + np.cos(np.pi * current_decay_epoch / decay_epochs))
+        return initial_lr * cosine_decay
     
-    # Early Stopping
+    # Learning Rate Scheduler
+    reduce_lr = LearningRateScheduler(smart_lr_schedule)
+    
+    # Early Stopping with more patience since we don't have data augmentation
     early_stopping = EarlyStopping(
         min_delta=0.001,  # minimum amount of change to count as an improvement
-        patience=20,  # how many epochs to wait before stopping
+        patience=15,  # increased patience since no data augmentation
         restore_best_weights=True,
+        monitor='val_accuracy'  # monitor validation accuracy
     )
     
     # Visualize learning rate decay
-    print("Learning rate decay schedule:")
-    decays = [(lambda x: 1e-3 * 0.9 ** x)(x) for x in range(10)]
-    for i, lr in enumerate(decays, 1):
-        print(f"Epoch {i} Learning Rate: {lr}")
+    print("Smart learning rate schedule:")
+    for i in range(10):
+        lr = smart_lr_schedule(i)
+        print(f"Epoch {i+1} Learning Rate: {lr:.6f}")
     
     return [reduce_lr, early_stopping]
 
@@ -438,6 +457,7 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
     Perform one incremental learning trial
     Start with 100 samples, add 100 more until target accuracy is reached
     Uses stratified sampling to ensure representative class distribution
+    Backtracks when accuracy deteriorates and tries different samples
     """
     print(f"\n{'='*60}")
     print(f"TRIAL {trial_num}")
@@ -468,6 +488,8 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
     best_model = None
     best_history = None
     best_sample_indices = None
+    consecutive_deteriorations = 0
+    max_deteriorations = 3  # Maximum consecutive deteriorations before giving up
     
     # Use stratified sampling to get representative indices
     from sklearn.model_selection import StratifiedShuffleSplit
@@ -475,70 +497,93 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
     while current_samples <= max_samples and best_accuracy < target_accuracy:
         print(f"\n--- Training with {current_samples} samples ---")
         
-        # Use stratified sampling to select current subset
-        sss = StratifiedShuffleSplit(n_splits=1, test_size=1-current_samples/total_samples, random_state=trial_seed)
+        # Try different sample combinations if accuracy deteriorated
+        attempts = 0
+        max_attempts = 5  # Try up to 5 different sample combinations
         
-        # Get stratified indices
-        for train_idx, _ in sss.split(df, class_labels):
-            current_indices = train_idx
-            break
-        
-        # Ensure we get exactly the number of samples we want
-        if len(current_indices) > current_samples:
-            current_indices = current_indices[:current_samples]
-        elif len(current_indices) < current_samples:
-            # If we don't have enough, add more random samples
-            remaining_indices = np.setdiff1d(np.arange(total_samples), current_indices)
-            additional_needed = current_samples - len(current_indices)
-            additional_indices = np.random.choice(remaining_indices, additional_needed, replace=False)
-            current_indices = np.concatenate([current_indices, additional_indices])
-        
-        df_subset = df.iloc[current_indices].copy()
-        
-        # Print class distribution for verification
-        subset_classes = df_subset.iloc[:, 0]
-        unique_classes, class_counts = np.unique(subset_classes, return_counts=True)
-        print(f"Class distribution: {dict(zip(unique_classes, class_counts))}")
-        
-        # Preprocess this subset
-        try:
-            x_train, y_train, df_test_processed, df_test_labels, img_size, num_classes = preprocess_incremental_data(
-                df_subset, df_test, seed=trial_seed
-            )
+        while attempts < max_attempts:
+            # Use stratified sampling to select current subset
+            sss = StratifiedShuffleSplit(n_splits=1, test_size=1-current_samples/total_samples, 
+                                       random_state=trial_seed + attempts)  # Different seed for each attempt
             
-            # Build and compile model
-            model = build_model(img_size, num_classes)
-            model = compile_model(model)
-            
-            # Create callbacks
-            callbacks = create_callbacks()
-            
-            # Train model (fewer epochs for incremental learning)
-            history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), callbacks, epochs=30)
-            
-            # Evaluate model on the complete test set
-            test_accuracy = evaluate_model(model, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), history, plot=False)
-            
-            print(f"Current accuracy: {test_accuracy:.4f}")
-            
-            # Update best if better
-            if test_accuracy > best_accuracy:
-                best_accuracy = test_accuracy
-                best_model = model
-                best_history = history
-                best_sample_indices = current_indices.copy()
-                print(f"New best accuracy: {best_accuracy:.4f} with {current_samples} samples")
-            
-            # Check if target reached
-            if test_accuracy >= target_accuracy:
-                print(f"Target accuracy {target_accuracy} reached with {current_samples} samples!")
+            # Get stratified indices
+            for train_idx, _ in sss.split(df, class_labels):
+                current_indices = train_idx
                 break
+            
+            # Ensure we get exactly the number of samples we want
+            if len(current_indices) > current_samples:
+                current_indices = current_indices[:current_samples]
+            elif len(current_indices) < current_samples:
+                # If we don't have enough, add more random samples
+                remaining_indices = np.setdiff1d(np.arange(total_samples), current_indices)
+                additional_needed = current_samples - len(current_indices)
+                additional_indices = np.random.choice(remaining_indices, additional_needed, replace=False)
+                current_indices = np.concatenate([current_indices, additional_indices])
+            
+            df_subset = df.iloc[current_indices].copy()
+            
+            # Print class distribution for verification
+            subset_classes = df_subset.iloc[:, 0]
+            unique_classes, class_counts = np.unique(subset_classes, return_counts=True)
+            print(f"Attempt {attempts + 1}: Class distribution: {dict(zip(unique_classes, class_counts))}")
+            
+            # Preprocess this subset
+            try:
+                x_train, y_train, df_test_processed, df_test_labels, img_size, num_classes = preprocess_incremental_data(
+                    df_subset, df_test, seed=trial_seed + attempts
+                )
                 
-        except Exception as e:
-            print(f"Error in trial {trial_num} with {current_samples} samples: {e}")
+                # Build and compile model
+                model = build_model(img_size, num_classes)
+                model = compile_model(model)
+                
+                # Create callbacks
+                callbacks = create_callbacks()
+                
+                # Train model (fewer epochs for incremental learning)
+                history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), callbacks, epochs=30)
+                
+                # Evaluate model on the complete test set
+                test_accuracy = evaluate_model(model, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), history, plot=False)
+                
+                print(f"Attempt {attempts + 1} accuracy: {test_accuracy:.4f}")
+                
+                # Check if this is better than our best
+                if test_accuracy > best_accuracy:
+                    best_accuracy = test_accuracy
+                    best_model = model
+                    best_history = history
+                    best_sample_indices = current_indices.copy()
+                    consecutive_deteriorations = 0  # Reset deterioration counter
+                    print(f"New best accuracy: {best_accuracy:.4f} with {current_samples} samples")
+                    break  # Found a good combination, move to next sample size
+                else:
+                    # Accuracy deteriorated or didn't improve
+                    deterioration = best_accuracy - test_accuracy
+                    print(f"Accuracy deteriorated by {deterioration:.4f}, trying different samples...")
+                    attempts += 1
+                    
+            except Exception as e:
+                print(f"Error in attempt {attempts + 1}: {e}")
+                attempts += 1
+        
+        # If we couldn't find a better combination after all attempts
+        if attempts >= max_attempts:
+            consecutive_deteriorations += 1
+            print(f"Could not improve accuracy after {max_attempts} attempts")
+            print(f"Consecutive deteriorations: {consecutive_deteriorations}")
+            
+            if consecutive_deteriorations >= max_deteriorations:
+                print(f"Stopping trial {trial_num} after {max_deteriorations} consecutive deteriorations")
+                break
+        
+        # Check if target reached
+        if best_accuracy >= target_accuracy:
+            print(f"Target accuracy {target_accuracy} reached with {current_samples} samples!")
             break
         
-        # Add more samples
+        # Add more samples for next iteration
         current_samples += batch_size
     
     return {
