@@ -23,7 +23,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.utils import to_categorical
 
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, Dropout, Flatten
+from tensorflow.keras.layers import Dense, Dropout, Flatten, Input
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 
@@ -212,10 +212,12 @@ def build_model(img_size=28, num_classes=10):
     
     model = Sequential()
     
+    # Add Input layer as first layer
+    model.add(Input(shape=(img_size, img_size, 1)))
+    
     # First Convolutional Block
     model.add(Conv2D(filters=32, kernel_size=(3, 3), activation='relu', 
-                     strides=1, padding='same', data_format='channels_last',
-                     input_shape=(img_size, img_size, 1)))
+                     strides=1, padding='same', data_format='channels_last'))
     model.add(BatchNormalization())
     model.add(Conv2D(filters=32, kernel_size=(3, 3), activation='relu', 
                      strides=1, padding='same', data_format='channels_last'))
