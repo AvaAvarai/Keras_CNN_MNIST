@@ -158,11 +158,96 @@ def preprocess_data(df, df_test, seed=3141):
     
     return x_train, x_test, y_train, y_test, df_test, datagen, df_test_labels, img_size
 
-def build_model(img_size=28):
+def preprocess_incremental_data(df_subset, df_test, seed=3141):
+    """
+    Preprocess data for incremental learning without splitting training data
+    """
+    print(f"\nPreprocessing incremental data with {len(df_subset)} samples...")
+    
+    # Set random seed for reproducibility
+    np.random.seed(seed)
+    
+    # Handle both 'label' and 'class' column names for training data
+    if 'label' in df_subset.columns:
+        X_train = df_subset.iloc[:, 1:]  # All columns except the first (labels)
+        Y_train = df_subset.iloc[:, 0]   # First column (labels)
+    elif 'class' in df_subset.columns:
+        X_train = df_subset.iloc[:, 1:]  # All columns except the first (class)
+        Y_train = df_subset.iloc[:, 0]   # First column (class)
+    else:
+        raise ValueError("Neither 'label' nor 'class' column found in training data")
+    
+    print(f"Training set: {X_train.shape}")
+    
+    # For test data, separate features and labels
+    if 'label' in df_test.columns:
+        df_test_features = df_test.iloc[:, 1:]  # Features (exclude label column)
+        df_test_labels = df_test.iloc[:, 0]     # Labels (first column)
+    elif 'class' in df_test.columns:
+        df_test_features = df_test.iloc[:, 1:]  # Features (exclude class column)
+        df_test_labels = df_test.iloc[:, 0]     # Class (first column)
+    else:
+        df_test_features = df_test  # No label column to exclude
+        df_test_labels = None
+    
+    print(f"Test data features shape: {df_test_features.shape}")
+    if df_test_labels is not None:
+        print(f"Test data labels shape: {df_test_labels.shape}")
+    
+    # Calculate number of classes dynamically
+    num_classes = len(np.unique(Y_train))
+    print(f"Number of classes detected: {num_classes}")
+    
+    # Calculate image dimensions for reshaping
+    n_features = X_train.shape[1]
+    img_size = int(np.sqrt(n_features))
+    
+    # If not a perfect square, pad to the next square
+    if img_size * img_size != n_features:
+        img_size = int(np.ceil(np.sqrt(n_features)))
+        print(f"Features ({n_features}) not a perfect square, using {img_size}x{img_size} = {img_size*img_size}")
+    
+    # Reshape images to square dimensions
+    x_train = X_train.values.reshape(-1, img_size, img_size, 1)
+    df_test_reshaped = df_test_features.values.reshape(-1, img_size, img_size, 1)
+    
+    print(f"Reshaped training data: {x_train.shape}")
+    print(f"Reshaped test data: {df_test_reshaped.shape}")
+    
+    # Normalize pixel values to [0, 1]
+    x_train = x_train.astype("float32") / 255
+    df_test_reshaped = df_test_reshaped.astype("float32") / 255
+    
+    # Create data augmentation generator
+    datagen = ImageDataGenerator(
+        featurewise_center=False,
+        samplewise_center=False,
+        featurewise_std_normalization=False,
+        samplewise_std_normalization=False,
+        zca_whitening=False,
+        rotation_range=10,
+        zoom_range=0.1,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        horizontal_flip=False,
+        vertical_flip=False
+    )
+    
+    # Fit the data generator on training data
+    datagen.fit(x_train)
+    
+    # One-hot encode labels
+    y_train = to_categorical(Y_train, num_classes=num_classes)
+    
+    print(f"One-hot encoded training labels: {y_train.shape}")
+    
+    return x_train, y_train, df_test_reshaped, datagen, df_test_labels, img_size, num_classes
+
+def build_model(img_size=28, num_classes=10):
     """
     Build the CNN model architecture
     """
-    print(f"\nBuilding CNN model for {img_size}x{img_size} images...")
+    print(f"\nBuilding CNN model for {img_size}x{img_size} images with {num_classes} classes...")
     
     model = Sequential()
     
@@ -195,7 +280,7 @@ def build_model(img_size=28):
     model.add(Dense(1024, activation='relu'))
     model.add(BatchNormalization())
     model.add(Dropout(0.5))
-    model.add(Dense(10, activation='softmax'))
+    model.add(Dense(num_classes, activation='softmax'))
     
     return model
 
@@ -262,9 +347,9 @@ def train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks, epo
     
     return history
 
-def evaluate_model(model, x_test, y_test, history):
+def evaluate_model(model, x_test, y_test, history, plot=False):
     """
-    Evaluate the model and plot training history
+    Evaluate the model and optionally plot training history
     """
     print("\nEvaluating model...")
     
@@ -273,33 +358,66 @@ def evaluate_model(model, x_test, y_test, history):
     print(f"Test accuracy: {test_accuracy:.4f}")
     print(f"Test loss: {test_loss:.4f}")
     
-    # Plot training history
-    plt.figure(figsize=(13, 5))
-    
-    # Plot loss
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'])
-    plt.plot(history.history['val_loss'])
-    plt.title("Model Loss")
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend(['Train', 'Validation'])
-    plt.grid()
-    
-    # Plot accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['accuracy'])
-    plt.plot(history.history['val_accuracy'])
-    plt.title('Model Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend(['Train', 'Validation'])
-    plt.grid()
-    
-    plt.tight_layout()
-    plt.show()
+    # Plot training history only if requested
+    if plot:
+        plt.figure(figsize=(13, 5))
+        
+        # Plot loss
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.title("Model Loss")
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend(['Train', 'Validation'])
+        plt.grid()
+        
+        # Plot accuracy
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history['accuracy'])
+        plt.plot(history.history['val_accuracy'])
+        plt.title('Model Accuracy')
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend(['Train', 'Validation'])
+        plt.grid()
+        
+        plt.tight_layout()
+        plt.show()
     
     return test_accuracy
+
+def plot_best_trial(best_trial):
+    """
+    Plot the training history for the best trial only
+    """
+    if best_trial['best_history'] is not None:
+        history = best_trial['best_history']
+        
+        plt.figure(figsize=(13, 5))
+        
+        # Plot loss
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.title(f"Best Trial {best_trial['trial_num']} - Model Loss")
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend(['Train', 'Validation'])
+        plt.grid()
+        
+        # Plot accuracy
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history['accuracy'])
+        plt.plot(history.history['val_accuracy'])
+        plt.title(f"Best Trial {best_trial['trial_num']} - Model Accuracy")
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend(['Train', 'Validation'])
+        plt.grid()
+        
+        plt.tight_layout()
+        plt.show()
 
 def make_predictions(model, df_test, df_test_labels=None):
     """
@@ -377,22 +495,22 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
         
         # Preprocess this subset
         try:
-            x_train, x_test, y_train, y_test, df_test_processed, datagen, df_test_labels, img_size = preprocess_data(
+            x_train, y_train, df_test_processed, datagen, df_test_labels, img_size, num_classes = preprocess_incremental_data(
                 df_subset, df_test, seed=trial_seed
             )
             
             # Build and compile model
-            model = build_model(img_size)
+            model = build_model(img_size, num_classes)
             model = compile_model(model)
             
             # Create callbacks
             callbacks = create_callbacks()
             
             # Train model (fewer epochs for incremental learning)
-            history = train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks, epochs=30)
+            history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), datagen, callbacks, epochs=30)
             
             # Evaluate model
-            test_accuracy = evaluate_model(model, x_test, y_test, history)
+            test_accuracy = evaluate_model(model, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), history, plot=False)
             
             print(f"Current accuracy: {test_accuracy:.4f}")
             
@@ -460,6 +578,26 @@ def run_multiple_trials(df, df_test, num_trials=10, target_accuracy=0.95, batch_
     
     return best_trial, trials_results
 
+def save_all_trials_subsets(df, all_trials, base_filename=None):
+    """
+    Save all trial subsets to individual CSV files
+    """
+    if base_filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = f"trial_subset_{timestamp}"
+    
+    saved_files = []
+    
+    for trial in all_trials:
+        if trial['best_sample_indices'] is not None:
+            trial_subset = df.iloc[trial['best_sample_indices']].copy()
+            filename = f"{base_filename}_trial_{trial['trial_num']}_acc_{trial['best_accuracy']:.4f}_samples_{trial['samples_used']}.csv"
+            trial_subset.to_csv(filename, index=False)
+            saved_files.append(filename)
+            print(f"Trial {trial['trial_num']} subset saved to: {filename}")
+    
+    return saved_files
+
 def save_best_subset(df, best_trial, filename=None):
     """
     Save the best performing subset to a new CSV file
@@ -498,18 +636,21 @@ def main():
         # Run multiple trials
         best_trial, all_trials = run_multiple_trials(
             df, df_test, 
-            num_trials=5,  # Number of trials to run
-            target_accuracy=0.95,  # Target accuracy
+            num_trials=10,  # Number of trials to run
+            target_accuracy=0.99,  # Target accuracy
             batch_size=100,  # Samples to add each iteration
             max_samples=10000  # Maximum samples to use (None for all)
         )
         
-        # Save the best subset
-        best_subset_file = save_best_subset(df, best_trial)
+        # Save all trial subsets
+        saved_files = save_all_trials_subsets(df, all_trials)
         
         # Save best model if target was reached
         if best_trial['target_reached'] and best_trial['best_model'] is not None:
             save_model(best_trial['best_model'], 'best_incremental_model.h5')
+        
+        # Plot the best trial
+        plot_best_trial(best_trial)
         
         # Print summary of all trials
         print(f"\n{'='*80}")
@@ -522,7 +663,8 @@ def main():
         print(f"\n{'='*80}")
         print(f"PIPELINE COMPLETED!")
         print(f"Best accuracy achieved: {best_trial['best_accuracy']:.4f}")
-        print(f"Best subset saved to: {best_subset_file}")
+        print(f"All trial subsets saved to: {', '.join(saved_files)}")
+        print(f"Best subset saved to: {save_best_subset(df, best_trial)}")
         print(f"{'='*80}")
         
     except FileNotFoundError as e:
