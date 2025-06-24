@@ -580,7 +580,7 @@ def run_multiple_trials(df, df_test, num_trials=10, target_accuracy=0.95, batch_
 
 def save_all_trials_subsets(df, all_trials, base_filename=None):
     """
-    Save all trial subsets to individual CSV files
+    Save all trial subsets to individual CSV files with original row indices
     """
     if base_filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -591,16 +591,21 @@ def save_all_trials_subsets(df, all_trials, base_filename=None):
     for trial in all_trials:
         if trial['best_sample_indices'] is not None:
             trial_subset = df.iloc[trial['best_sample_indices']].copy()
+            
+            # Add original row index column
+            trial_subset['original_row_index'] = trial['best_sample_indices']
+            
             filename = f"{base_filename}_trial_{trial['trial_num']}_acc_{trial['best_accuracy']:.4f}_samples_{trial['samples_used']}.csv"
             trial_subset.to_csv(filename, index=False)
             saved_files.append(filename)
             print(f"Trial {trial['trial_num']} subset saved to: {filename}")
+            print(f"  - Original row indices: {trial['best_sample_indices'][:10]}..." if len(trial['best_sample_indices']) > 10 else f"  - Original row indices: {trial['best_sample_indices']}")
     
     return saved_files
 
 def save_best_subset(df, best_trial, filename=None):
     """
-    Save the best performing subset to a new CSV file
+    Save the best performing subset to a new CSV file with original row indices
     """
     if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -608,9 +613,14 @@ def save_best_subset(df, best_trial, filename=None):
     
     if best_trial['best_sample_indices'] is not None:
         best_subset = df.iloc[best_trial['best_sample_indices']].copy()
+        
+        # Add original row index column
+        best_subset['original_row_index'] = best_trial['best_sample_indices']
+        
         best_subset.to_csv(filename, index=False)
         print(f"\nBest subset saved to: {filename}")
         print(f"Subset shape: {best_subset.shape}")
+        print(f"Original row indices: {best_trial['best_sample_indices'][:10]}..." if len(best_trial['best_sample_indices']) > 10 else f"Original row indices: {best_trial['best_sample_indices']}")
         return filename
     else:
         print("No best subset to save")
@@ -637,9 +647,9 @@ def main():
         best_trial, all_trials = run_multiple_trials(
             df, df_test, 
             num_trials=10,  # Number of trials to run
-            target_accuracy=0.99,  # Target accuracy
+            target_accuracy=0.95,  # Target accuracy
             batch_size=100,  # Samples to add each iteration
-            max_samples=10000  # Maximum samples to use (None for all)
+            max_samples=None  # Maximum samples to use (None for all)
         )
         
         # Save all trial subsets
