@@ -8,7 +8,6 @@ This script implements:
 - Multiple trials with different random subsets
 - Best subset selection and saving
 - Convolutional Neural Network (CNN) architecture
-- Data augmentation and preprocessing
 - Learning rate scheduling
 - Early stopping
 """
@@ -21,7 +20,6 @@ from datetime import datetime
 
 from sklearn.model_selection import train_test_split
 
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.utils import to_categorical
 
 from tensorflow.keras.models import Sequential, load_model
@@ -67,7 +65,6 @@ def preprocess_data(df, df_test, seed=3141):
     - Train/test split
     - Reshaping images (for DR data, we'll reshape to approximate square dimensions)
     - Normalization
-    - Data augmentation
     - One-hot encoding
     """
     print("\nPreprocessing data...")
@@ -131,24 +128,6 @@ def preprocess_data(df, df_test, seed=3141):
     x_test = x_test.astype("float32") / 255
     df_test = df_test.astype("float32") / 255
     
-    # Create data augmentation generator
-    datagen = ImageDataGenerator(
-        featurewise_center=False,  # set input mean to 0 over the dataset
-        samplewise_center=False,  # set each sample mean to 0
-        featurewise_std_normalization=False,  # divide inputs by std of the dataset
-        samplewise_std_normalization=False,  # divide each input by its std
-        zca_whitening=False,  # apply ZCA whitening
-        rotation_range=10,  # randomly rotate images in the range (degrees, 0 to 180)
-        zoom_range=0.1,  # Randomly zoom image 
-        width_shift_range=0.1,  # randomly shift images horizontally (fraction of total width)
-        height_shift_range=0.1,  # randomly shift images vertically (fraction of total height)
-        horizontal_flip=False,  # randomly flip images
-        vertical_flip=False  # randomly flip images
-    )
-    
-    # Fit the data generator on training data
-    datagen.fit(x_train)
-    
     # One-hot encode labels
     y_train = to_categorical(y_train, num_classes=10)
     y_test = to_categorical(y_test, num_classes=10)
@@ -156,7 +135,7 @@ def preprocess_data(df, df_test, seed=3141):
     print(f"One-hot encoded training labels: {y_train.shape}")
     print(f"One-hot encoded validation labels: {y_test.shape}")
     
-    return x_train, x_test, y_train, y_test, df_test, datagen, df_test_labels, img_size
+    return x_train, x_test, y_train, y_test, df_test, df_test_labels, img_size
 
 def preprocess_incremental_data(df_subset, df_test, seed=3141):
     """
@@ -218,30 +197,12 @@ def preprocess_incremental_data(df_subset, df_test, seed=3141):
     x_train = x_train.astype("float32") / 255
     df_test_reshaped = df_test_reshaped.astype("float32") / 255
     
-    # Create data augmentation generator
-    datagen = ImageDataGenerator(
-        featurewise_center=False,
-        samplewise_center=False,
-        featurewise_std_normalization=False,
-        samplewise_std_normalization=False,
-        zca_whitening=False,
-        rotation_range=10,
-        zoom_range=0.1,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        horizontal_flip=False,
-        vertical_flip=False
-    )
-    
-    # Fit the data generator on training data
-    datagen.fit(x_train)
-    
     # One-hot encode labels
     y_train = to_categorical(Y_train, num_classes=num_classes)
     
     print(f"One-hot encoded training labels: {y_train.shape}")
     
-    return x_train, y_train, df_test_reshaped, datagen, df_test_labels, img_size, num_classes
+    return x_train, y_train, df_test_reshaped, df_test_labels, img_size, num_classes
 
 def build_model(img_size=28, num_classes=10):
     """
@@ -327,22 +288,35 @@ def create_callbacks():
     
     return [reduce_lr, early_stopping]
 
-def train_model(model, x_train, y_train, x_test, y_test, datagen, callbacks, epochs=50):
+def train_model(model, x_train, y_train, x_test, y_test, callbacks, epochs=50):
     """
     Train the model
     """
     print(f"\nTraining model with {len(x_train)} samples...")
     
-    batch_size = 64
+    # Calculate batch size as percentage of dataset size
+    # Start with 20% for small datasets, scale down to 5% for large datasets
+    if len(x_train) <= 100:
+        batch_percentage = 0.20  # 20% of dataset
+    elif len(x_train) <= 1000:
+        batch_percentage = 0.15  # 15% of dataset
+    elif len(x_train) <= 10000:
+        batch_percentage = 0.10  # 10% of dataset
+    else:
+        batch_percentage = 0.05  # 5% of dataset
     
-    # Fit the model
+    batch_size = max(1, int(len(x_train) * batch_percentage))
+    
+    print(f"Using batch size {batch_size} ({batch_percentage*100:.0f}% of {len(x_train)} samples)")
+    
     history = model.fit(
-        datagen.flow(x_train, y_train, batch_size=batch_size),
+        x_train, y_train,
         epochs=epochs,
         validation_data=(x_test, y_test),
         verbose=1,
-        steps_per_epoch=x_train.shape[0] // batch_size,
-        callbacks=callbacks
+        batch_size=batch_size,
+        callbacks=callbacks,
+        shuffle=True
     )
     
     return history
@@ -526,7 +500,7 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
         
         # Preprocess this subset
         try:
-            x_train, y_train, df_test_processed, datagen, df_test_labels, img_size, num_classes = preprocess_incremental_data(
+            x_train, y_train, df_test_processed, df_test_labels, img_size, num_classes = preprocess_incremental_data(
                 df_subset, df_test, seed=trial_seed
             )
             
@@ -538,7 +512,7 @@ def incremental_learning_trial(df, df_test, trial_num, target_accuracy=0.95, bat
             callbacks = create_callbacks()
             
             # Train model (fewer epochs for incremental learning)
-            history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), datagen, callbacks, epochs=30)
+            history = train_model(model, x_train, y_train, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), callbacks, epochs=30)
             
             # Evaluate model on the complete test set
             test_accuracy = evaluate_model(model, df_test_processed, to_categorical(df_test_labels, num_classes=num_classes), history, plot=False)
